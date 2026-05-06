@@ -373,6 +373,115 @@ public actor MailStore {
         )
     }
 
+    // MARK: - Thread support (Phase A.2)
+
+    /// Fetch all message heads sharing a `conversation_id`. Returns empty
+    /// when the conversation doesn't exist. Excludes deleted messages.
+    public func messageHeadsForConversation(_ conversationID: Int64) throws -> [MessageHead] {
+        let sql = """
+            SELECT m.ROWID,
+                   m.mailbox,
+                   m.message_id,
+                   m.conversation_id,
+                   s.subject,
+                   addr.address,
+                   m.date_sent,
+                   m.date_received,
+                   m.read,
+                   m.flagged,
+                   m.size,
+                   m.in_reply_to
+            FROM messages m
+            LEFT JOIN subjects s ON s.ROWID = m.subject
+            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            WHERE m.conversation_id = ?
+              AND (m.deleted IS NULL OR m.deleted = 0)
+            ORDER BY m.date_received ASC, m.ROWID ASC
+            """
+        let heads = try runQuery(sql, bindings: [conversationID]) {
+            row -> MessageHead in
+            return MessageHead(
+                id: int64(row, 0) ?? 0,
+                mailboxID: int64(row, 1) ?? 0,
+                messageID: string(row, 2),
+                conversationID: int64(row, 3),
+                subject: string(row, 4),
+                from: string(row, 5),
+                dateSent: MailSchema.date(fromUnixEpoch: double(row, 6)),
+                dateReceived: MailSchema.date(fromUnixEpoch: double(row, 7)),
+                isRead: (int64(row, 8) ?? 0) != 0,
+                isFlagged: (int64(row, 9) ?? 0) != 0,
+                hasAttachments: false,
+                sizeBytes: int64(row, 10).map { Int($0) },
+                inReplyTo: string(row, 11)
+            )
+        }
+        let ids = heads.map { $0.id }
+        let attachMap = try fetchAttachmentPresence(messageIDs: ids)
+        return heads.map { h in
+            MessageHead(
+                id: h.id,
+                mailboxID: h.mailboxID,
+                messageID: h.messageID,
+                conversationID: h.conversationID,
+                subject: h.subject,
+                from: h.from,
+                dateSent: h.dateSent,
+                dateReceived: h.dateReceived,
+                isRead: h.isRead,
+                isFlagged: h.isFlagged,
+                hasAttachments: attachMap[h.id] ?? false,
+                sizeBytes: h.sizeBytes,
+                inReplyTo: h.inReplyTo
+            )
+        }
+    }
+
+    /// Look up a message head by its RFC822 `Message-ID` header value.
+    /// Returns `nil` when no match is found. Used by `In-Reply-To` /
+    /// `References` thread reconstruction in `ThreadResolver`.
+    public func messageHead(forMessageID rfcMessageID: String) throws -> MessageHead? {
+        let sql = """
+            SELECT m.ROWID,
+                   m.mailbox,
+                   m.message_id,
+                   m.conversation_id,
+                   s.subject,
+                   addr.address,
+                   m.date_sent,
+                   m.date_received,
+                   m.read,
+                   m.flagged,
+                   m.size,
+                   m.in_reply_to
+            FROM messages m
+            LEFT JOIN subjects s ON s.ROWID = m.subject
+            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            WHERE m.message_id = ?
+              AND (m.deleted IS NULL OR m.deleted = 0)
+            LIMIT 1
+            """
+        let rows = try runQuery(sql, bindings: [rfcMessageID]) {
+            row -> MessageHead in
+            return MessageHead(
+                id: int64(row, 0) ?? 0,
+                mailboxID: int64(row, 1) ?? 0,
+                messageID: string(row, 2),
+                conversationID: int64(row, 3),
+                subject: string(row, 4),
+                from: string(row, 5),
+                dateSent: MailSchema.date(fromUnixEpoch: double(row, 6)),
+                dateReceived: MailSchema.date(fromUnixEpoch: double(row, 7)),
+                isRead: (int64(row, 8) ?? 0) != 0,
+                isFlagged: (int64(row, 9) ?? 0) != 0,
+                hasAttachments: false,
+                sizeBytes: int64(row, 10).map { Int($0) },
+                inReplyTo: string(row, 11)
+            )
+        }
+        return rows.first
+    }
+
     // MARK: - Internal helpers
 
     /// Internal raw mailbox snapshot used for accounts derivation.

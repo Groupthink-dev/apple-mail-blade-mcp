@@ -21,19 +21,39 @@ import MCP
 public actor AppleMailToolRegistry {
 
     public let store: MailStore
+    public let parser: EMLXParser
+    public let locator: EMLXLocator
+    public let attachmentReader: AttachmentReader
+    public let threadResolver: ThreadResolver
+
     private let listAccounts: ListAccountsHandler
     private let listMailboxes: ListMailboxesHandler
     private let listMessages: ListMessagesHandler
     private let searchMessages: SearchMessagesHandler
     private let head: HeadHandler
+    private let readMessage: ReadMessageHandler
+    private let readAttachment: ReadAttachmentHandler
+    private let readThread: ReadThreadHandler
 
     public init(config: MailBladeConfig) throws {
         self.store = try MailStore(config: config)
+        self.parser = EMLXParser(config: config)
+        self.locator = EMLXLocator(config: config)
+        self.attachmentReader = AttachmentReader(config: config, locator: locator)
+        self.threadResolver = ThreadResolver(
+            store: store, parser: parser, locator: locator
+        )
+
         self.listAccounts = ListAccountsHandler(store: store)
         self.listMailboxes = ListMailboxesHandler(store: store)
         self.listMessages = ListMessagesHandler(store: store)
         self.searchMessages = SearchMessagesHandler(store: store)
         self.head = HeadHandler(store: store)
+        self.readMessage = ReadMessageHandler(
+            store: store, parser: parser, locator: locator
+        )
+        self.readAttachment = ReadAttachmentHandler(reader: attachmentReader)
+        self.readThread = ReadThreadHandler(resolver: threadResolver)
     }
 
     /// Convenience constructor using the default canonical Mail.app path.
@@ -61,10 +81,13 @@ public actor AppleMailToolRegistry {
             return await searchMessages.handle(arguments: arguments)
         case "apple_mail_head":
             return await head.handle(arguments: arguments)
-        case "apple_mail_read_message",
-            "apple_mail_read_attachment",
-            "apple_mail_read_thread",
-            "apple_mail_extract_entities":
+        case "apple_mail_read_message":
+            return await readMessage.handle(arguments: arguments)
+        case "apple_mail_read_attachment":
+            return await readAttachment.handle(arguments: arguments)
+        case "apple_mail_read_thread":
+            return await readThread.handle(arguments: arguments)
+        case "apple_mail_extract_entities":
             return errorResult(.notImplemented(toolName: name))
         default:
             return errorResult(.internalError("unknown tool: \(name)"))
