@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# No signing in CI. No Apple developer credentials. The library compiles into
+# Stallari, and Stallari's local Makefile pipeline is the signing event.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
+
+      - name: Show Swift version
+        run: swift --version
+
+      # The package depends on `../swift-sdk` (local path) for production
+      # builds inside the user's stallari-harness checkout. CI runs are
+      # standalone, so we resolve the dep against the upstream public repo
+      # via a temporary swap. Keep the checked-in Package.swift untouched —
+      # CI patches a working copy only.
+      - name: Patch local-path MCP dep to upstream URL for CI
+        run: |
+          set -euo pipefail
+          if grep -q '\.package(path: "\.\./swift-sdk")' Package.swift; then
+            sed -i.bak 's|\.package(path: "\.\./swift-sdk")|.package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0")|' Package.swift
+          fi
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Lint (swift-format)
+        # swift-format ships with the toolchain on macOS-14+ runners.
+        run: |
+          if command -v swift-format >/dev/null 2>&1; then
+            swift-format lint --recursive Sources Tests
+          else
+            echo "swift-format not available on this runner; skipping lint."
+          fi
+
+      - name: Build
+        run: swift build -c debug
+
+      - name: Test (with coverage)
+        run: swift test --enable-code-coverage
+
+      - name: Restore checked-in Package.swift
+        if: always()
+        run: |
+          if [ -f Package.swift.bak ]; then
+            mv Package.swift.bak Package.swift
+          fi

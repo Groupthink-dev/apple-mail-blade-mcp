@@ -1,0 +1,46 @@
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+xcuserdata/
+
+# Coverage
+*.profraw
+*.profdata
+coverage/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Secrets / local config — never commit
+.env
+.env.*
+*.p12
+*.p8
+*.cer
+*.pem
+secrets/
+
+# Real Mail.app data — never commit
+fixtures/real/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+Envelope*Index*
+*.emlx
+*.mbox/
+MailData/
+
+# Build output (this repo doesn't ship binaries — paranoia guard)
+dist/
+out/

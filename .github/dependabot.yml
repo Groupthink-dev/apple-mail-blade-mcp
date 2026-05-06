@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Swift Package Manager dependencies (MCP SDK, SQLite.swift).
+  # Manual review required — no auto-merge for supply-chain hygiene.
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "spm"
+
+  # GitHub Actions — keep workflow steps current. We pin to commit SHA in
+  # workflows themselves; Dependabot will surface SHA bumps as PRs.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
