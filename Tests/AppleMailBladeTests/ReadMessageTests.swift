@@ -175,15 +175,31 @@ final class ReadMessageTests: XCTestCase {
         XCTAssertTrue(json.contains("Lunch this week?"))
     }
 
-    // MARK: - extract_entities (still notImplemented in A.2)
+    // MARK: - extract_entities (live as of A.3)
 
-    func testExtractEntitiesRoutesToNotImplemented() async throws {
+    func testExtractEntitiesReturnsLanguageAndEntityArrays() async throws {
         let result = await registry.handleCall(
             name: "apple_mail_extract_entities",
             arguments: ["message_id": .int(1)]
         )
         let json = extractText(from: result)
-        XCTAssertTrue(json.contains("\"not_implemented\""))
+        // Body text "Hello — quick update on the Q2 milestones, we are
+        // ahead of schedule." — English.
+        XCTAssertTrue(json.contains("\"language\":\"en\""), "expected en language: \(json)")
+        XCTAssertTrue(json.contains("\"people\":"))
+        XCTAssertTrue(json.contains("\"orgs\":"))
+        XCTAssertTrue(json.contains("\"places\":"))
+        XCTAssertTrue(json.contains("\"dates\":"))
+        XCTAssertFalse(json.contains("\"not_implemented\""))
+    }
+
+    func testExtractEntitiesUnknownIDSurfacesError() async throws {
+        let result = await registry.handleCall(
+            name: "apple_mail_extract_entities",
+            arguments: ["message_id": .int(9999)]
+        )
+        let json = extractText(from: result)
+        XCTAssertTrue(json.contains("\"message_not_found\""))
     }
 
     // MARK: - helper

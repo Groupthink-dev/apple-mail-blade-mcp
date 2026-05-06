@@ -25,6 +25,7 @@ public actor AppleMailToolRegistry {
     public let locator: EMLXLocator
     public let attachmentReader: AttachmentReader
     public let threadResolver: ThreadResolver
+    public let entityExtractor: EntityExtractor
 
     private let listAccounts: ListAccountsHandler
     private let listMailboxes: ListMailboxesHandler
@@ -34,6 +35,7 @@ public actor AppleMailToolRegistry {
     private let readMessage: ReadMessageHandler
     private let readAttachment: ReadAttachmentHandler
     private let readThread: ReadThreadHandler
+    private let extractEntities: ExtractEntitiesHandler
 
     public init(config: MailBladeConfig) throws {
         self.store = try MailStore(config: config)
@@ -43,6 +45,7 @@ public actor AppleMailToolRegistry {
         self.threadResolver = ThreadResolver(
             store: store, parser: parser, locator: locator
         )
+        self.entityExtractor = EntityExtractor()
 
         self.listAccounts = ListAccountsHandler(store: store)
         self.listMailboxes = ListMailboxesHandler(store: store)
@@ -54,6 +57,9 @@ public actor AppleMailToolRegistry {
         )
         self.readAttachment = ReadAttachmentHandler(reader: attachmentReader)
         self.readThread = ReadThreadHandler(resolver: threadResolver)
+        self.extractEntities = ExtractEntitiesHandler(
+            store: store, parser: parser, locator: locator, extractor: entityExtractor
+        )
     }
 
     /// Convenience constructor using the default canonical Mail.app path.
@@ -88,7 +94,7 @@ public actor AppleMailToolRegistry {
         case "apple_mail_read_thread":
             return await readThread.handle(arguments: arguments)
         case "apple_mail_extract_entities":
-            return errorResult(.notImplemented(toolName: name))
+            return await extractEntities.handle(arguments: arguments)
         default:
             return errorResult(.internalError("unknown tool: \(name)"))
         }
