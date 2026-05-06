@@ -7,5 +7,7 @@
 
 extension AppleMailBlade {
     /// Library SemVer. Update this string at the same commit as the git tag.
-    public static let semver = "0.1.0-pre"
+    /// Pre-release suffix (`-rc1`) signals "feature-complete locally, awaiting
+    /// real-corpus smoke + StallariKit wiring before v0.1.0 ships."
+    public static let semver = "0.1.0-rc1"
 }
