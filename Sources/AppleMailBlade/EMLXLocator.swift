@@ -40,6 +40,13 @@ public actor EMLXLocator {
     /// existence checks for back-to-back lookups in the same mailbox.
     private var mailboxSubtreeCache: [Int64: String] = [:]
 
+    /// Negative-result cache. Real corpora routinely reference message
+    /// IDs whose `.emlx` body has been evicted by Mail.app's local-cache
+    /// management (Snoozed, cloud-only newsletters, etc). Without this,
+    /// `read_thread` can spend tens of seconds re-scanning the full tree
+    /// for each missing sibling. Cleared by `reset()`.
+    private var notFound: Set<Int64> = []
+
     /// Build a locator rooted at the directory containing `MailData/`. For
     /// a config pointing at `~/Library/Mail/V10/MailData/Envelope Index`,
     /// the root is `~/Library/Mail/V10/`. For test fixtures rooted under
@@ -62,6 +69,7 @@ public actor EMLXLocator {
         if let cached = cache[messageID], FileManager.default.fileExists(atPath: cached) {
             return cached
         }
+        if notFound.contains(messageID) { return nil }
         let needle = "\(messageID).emlx"
 
         // Hinted fast path — bounded to one mailbox subtree.
@@ -82,6 +90,10 @@ public actor EMLXLocator {
             cache[messageID] = found
             return found
         }
+        // Genuinely missing — Mail.app evicted the body, or the message
+        // was indexed but never fully downloaded. Cache the miss so
+        // sibling-walking thread reconstruction doesn't repeat the work.
+        notFound.insert(messageID)
         return nil
     }
 
@@ -114,6 +126,7 @@ public actor EMLXLocator {
     public func reset() {
         cache.removeAll()
         mailboxSubtreeCache.removeAll()
+        notFound.removeAll()
     }
 
     // MARK: - Internal: hint resolution
