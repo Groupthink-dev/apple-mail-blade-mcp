@@ -6,9 +6,11 @@ import MCP
 /// and returns it alongside metadata. 25MB hard cap surfaces
 /// `attachment_too_large` rather than partial reads.
 public struct ReadAttachmentHandler: Sendable {
+    public let store: MailStore
     public let reader: AttachmentReader
 
-    public init(reader: AttachmentReader) {
+    public init(store: MailStore, reader: AttachmentReader) {
+        self.store = store
         self.reader = reader
     }
 
@@ -23,11 +25,16 @@ public struct ReadAttachmentHandler: Sendable {
         let attachmentID = Int64(aidRaw)
 
         do {
+            // Resolve the mailbox URL so the locator can scope its scan.
+            // Index lookup also catches messageNotFound cleanly.
+            let head = try await store.head(messageID: messageID)
+            let url = (try? await store.mailboxURL(forMailboxID: head.mailboxID)) ?? nil
+            let hint = url.map { MailboxHint(mailboxID: head.mailboxID, url: $0) }
             let bytes = try await reader.read(
-                messageID: messageID, attachmentID: attachmentID
+                messageID: messageID, attachmentID: attachmentID, hint: hint
             )
             let filename = await reader.filename(
-                messageID: messageID, attachmentID: attachmentID
+                messageID: messageID, attachmentID: attachmentID, hint: hint
             )
             let payload = ReadAttachmentPayload(
                 messageID: messageID,

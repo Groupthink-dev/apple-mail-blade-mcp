@@ -55,7 +55,9 @@ public actor AppleMailToolRegistry {
         self.readMessage = ReadMessageHandler(
             store: store, parser: parser, locator: locator
         )
-        self.readAttachment = ReadAttachmentHandler(reader: attachmentReader)
+        self.readAttachment = ReadAttachmentHandler(
+            store: store, reader: attachmentReader
+        )
         self.readThread = ReadThreadHandler(resolver: threadResolver)
         self.extractEntities = ExtractEntitiesHandler(
             store: store, parser: parser, locator: locator, extractor: entityExtractor

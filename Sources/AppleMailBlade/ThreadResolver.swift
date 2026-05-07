@@ -62,10 +62,22 @@ public struct ThreadResolver: Sendable {
 
         var output: [ThreadMessage] = []
         output.reserveCapacity(members.count)
+        // Hint cache — avoids repeated mailboxURL SQL lookups when many
+        // thread members share a mailbox (the common case).
+        var urlCache: [Int64: String?] = [:]
         for h in members {
             let memberAccount = try await accountID(forMailbox: h.mailboxID)
             let crossAccount = memberAccount != anchorAccount
-            let bodyText: String? = await readBodyText(messageID: h.id)
+            let url: String?
+            if let cached = urlCache[h.mailboxID] {
+                url = cached
+            } else {
+                let fetched = (try? await store.mailboxURL(forMailboxID: h.mailboxID)) ?? nil
+                urlCache[h.mailboxID] = fetched
+                url = fetched
+            }
+            let hint = url.map { MailboxHint(mailboxID: h.mailboxID, url: $0) }
+            let bodyText: String? = await readBodyText(messageID: h.id, hint: hint)
             output.append(
                 ThreadMessage(
                     id: h.id,
@@ -129,8 +141,10 @@ public struct ThreadResolver: Sendable {
     /// Best-effort body extraction: read the `.emlx`, parse, return text.
     /// Failures (missing file, parse error, FDA denial) become `nil` so a
     /// single broken message doesn't break the thread response.
-    private func readBodyText(messageID: Int64) async -> String? {
-        guard let path = await locator.locate(messageID: messageID) else { return nil }
+    private func readBodyText(messageID: Int64, hint: MailboxHint? = nil) async -> String? {
+        guard let path = await locator.locate(messageID: messageID, hint: hint) else {
+            return nil
+        }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         guard
             let parsed = try? parser.parse(

@@ -30,7 +30,13 @@ public struct ReadMessageHandler: Sendable {
             // Index lookup first — gives a clean messageNotFound rather than
             // walking the disk for a nonexistent ID.
             let head = try await store.head(messageID: messageID)
-            guard let path = await locator.locate(messageID: messageID) else {
+            // Resolve the mailbox URL so the locator can scope its scan
+            // to a single on-disk subtree (real V10:
+            // <root>/<accountUUID>/<mailboxName>.mbox/). Falls back to a
+            // pruned full-tree scan if the URL is absent or unresolvable.
+            let url = (try? await store.mailboxURL(forMailboxID: head.mailboxID)) ?? nil
+            let hint = url.map { MailboxHint(mailboxID: head.mailboxID, url: $0) }
+            guard let path = await locator.locate(messageID: messageID, hint: hint) else {
                 return errorResult(.emlxNotFound(messageID: messageID))
             }
             let data: Data

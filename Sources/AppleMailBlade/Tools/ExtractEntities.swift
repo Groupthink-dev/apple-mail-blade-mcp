@@ -32,8 +32,11 @@ public struct ExtractEntitiesHandler: Sendable {
 
         do {
             // Index lookup first — clean message_not_found if the ID isn't real.
-            _ = try await store.head(messageID: messageID)
-            guard let path = await locator.locate(messageID: messageID) else {
+            let head = try await store.head(messageID: messageID)
+            // Scope the .emlx scan to the message's mailbox subtree.
+            let url = (try? await store.mailboxURL(forMailboxID: head.mailboxID)) ?? nil
+            let hint = url.map { MailboxHint(mailboxID: head.mailboxID, url: $0) }
+            guard let path = await locator.locate(messageID: messageID, hint: hint) else {
                 return errorResult(.emlxNotFound(messageID: messageID))
             }
             let data: Data

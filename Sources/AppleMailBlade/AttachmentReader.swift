@@ -22,8 +22,17 @@ public struct AttachmentReader: Sendable {
     /// Read attachment `attachmentID` (zero-based) from message `messageID`.
     /// Returns the attachment bytes plus the MIME type inferred from the
     /// filename extension, or throws on failure.
-    public func read(messageID: Int64, attachmentID: Int64) async throws -> Data {
-        guard let attachmentsDir = await locator.attachmentsRoot(messageID: messageID) else {
+    /// Pass a `MailboxHint` when known — bounds the on-disk scan to one
+    /// mailbox subtree; without it, the locator falls back to a pruned
+    /// full-tree scan.
+    public func read(
+        messageID: Int64, attachmentID: Int64, hint: MailboxHint? = nil
+    ) async throws -> Data {
+        guard
+            let attachmentsDir = await locator.attachmentsRoot(
+                messageID: messageID, hint: hint
+            )
+        else {
             throw MailBladeError.emlxNotFound(messageID: messageID)
         }
         let partDir = "\(attachmentsDir)/\(attachmentID)"
@@ -60,8 +69,14 @@ public struct AttachmentReader: Sendable {
 
     /// Filename of the on-disk attachment file (last component). Returns
     /// `nil` if the message or attachment can't be located.
-    public func filename(messageID: Int64, attachmentID: Int64) async -> String? {
-        guard let attachmentsDir = await locator.attachmentsRoot(messageID: messageID) else {
+    public func filename(
+        messageID: Int64, attachmentID: Int64, hint: MailboxHint? = nil
+    ) async -> String? {
+        guard
+            let attachmentsDir = await locator.attachmentsRoot(
+                messageID: messageID, hint: hint
+            )
+        else {
             return nil
         }
         let partDir = "\(attachmentsDir)/\(attachmentID)"

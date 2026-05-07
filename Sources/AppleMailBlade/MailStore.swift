@@ -525,6 +525,19 @@ public actor MailStore {
         return rows.first
     }
 
+    /// Resolve the canonical `mailboxes.url` for a given mailbox ROWID.
+    /// Single indexed lookup; intended to feed `EMLXLocator.MailboxHint`
+    /// so `.emlx` scans can be scoped to one mailbox's on-disk subtree.
+    /// Returns `nil` if the mailbox doesn't exist (caller falls back to
+    /// the locator's pruned full-tree scan).
+    public func mailboxURL(forMailboxID mailboxID: Int64) throws -> String? {
+        let sql = "SELECT url FROM mailboxes WHERE ROWID = ? LIMIT 1"
+        let rows = try runQuery(sql, bindings: [mailboxID]) { row -> String? in
+            return self.string(row, 0)
+        }
+        return rows.first ?? nil
+    }
+
     // MARK: - Internal helpers
 
     /// Internal raw mailbox snapshot used for accounts derivation.
