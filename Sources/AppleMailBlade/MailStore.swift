@@ -121,7 +121,7 @@ public actor MailStore {
         var sql = """
             SELECT m.ROWID,
                    m.mailbox,
-                   m.message_id,
+                   mgd.message_id_header,
                    m.conversation_id,
                    s.subject,
                    addr.address,
@@ -133,8 +133,11 @@ public actor MailStore {
                    summ.summary
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
-            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
             LEFT JOIN summaries summ ON summ.ROWID = m.summary
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
             WHERE m.mailbox = ?
               AND (m.deleted IS NULL OR m.deleted = 0)
             """
@@ -224,7 +227,7 @@ public actor MailStore {
         var sql = """
             SELECT m.ROWID,
                    m.mailbox,
-                   m.message_id,
+                   mgd.message_id_header,
                    m.conversation_id,
                    s.subject,
                    addr.address,
@@ -236,8 +239,11 @@ public actor MailStore {
                    summ.summary
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
-            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
             LEFT JOIN summaries summ ON summ.ROWID = m.summary
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
             """
         var bindings: [Binding?] = []
 
@@ -314,11 +320,14 @@ public actor MailStore {
     }
 
     /// Cheap metadata lookup. Reads only the index row — never opens `.emlx`.
+    /// `inReplyTo` is derived via a separate query against
+    /// `message_references` + `message_global_data` because real V10
+    /// doesn't store an in_reply_to column on `messages`.
     public func head(messageID: Int64) throws -> MessageHead {
         let sql = """
             SELECT m.ROWID,
                    m.mailbox,
-                   m.message_id,
+                   mgd.message_id_header,
                    m.conversation_id,
                    s.subject,
                    addr.address,
@@ -326,11 +335,13 @@ public actor MailStore {
                    m.date_received,
                    m.read,
                    m.flagged,
-                   m.size,
-                   m.in_reply_to
+                   m.size
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
-            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
             WHERE m.ROWID = ?
             """
         let rows = try runQuery(sql, bindings: [messageID]) {
@@ -348,7 +359,7 @@ public actor MailStore {
                 isFlagged: (int64(row, 9) ?? 0) != 0,
                 hasAttachments: false,
                 sizeBytes: int64(row, 10).map { Int($0) },
-                inReplyTo: string(row, 11)
+                inReplyTo: nil  // Filled below via message_references lookup
             )
         }
         guard let head = rows.first else {
@@ -356,6 +367,7 @@ public actor MailStore {
         }
         // Single-row attachment-presence lookup.
         let attachMap = try fetchAttachmentPresence(messageIDs: [messageID])
+        let inReplyTo = try fetchInReplyTo(messageID: messageID)
         return MessageHead(
             id: head.id,
             mailboxID: head.mailboxID,
@@ -369,19 +381,43 @@ public actor MailStore {
             isFlagged: head.isFlagged,
             hasAttachments: attachMap[messageID] ?? false,
             sizeBytes: head.sizeBytes,
-            inReplyTo: head.inReplyTo
+            inReplyTo: inReplyTo
         )
+    }
+
+    /// Resolve `In-Reply-To` for a message by walking
+    /// `message_references` (immediate-parent only — `is_originator = 1`)
+    /// and looking up the parent's RFC822 `Message-ID` header in
+    /// `message_global_data`. Returns `nil` if the message has no parent
+    /// or the lookup fails. Real V10 doesn't store this on `messages`.
+    private func fetchInReplyTo(messageID: Int64) throws -> String? {
+        let sql = """
+            SELECT mgd.message_id_header
+            FROM message_references mr
+            JOIN messages parent ON parent.ROWID = mr.reference
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = parent.global_message_id
+            WHERE mr.message = ?
+              AND mr.is_originator = 1
+            LIMIT 1
+            """
+        let rows = try runQuery(sql, bindings: [messageID]) { row -> String? in
+            return self.string(row, 0)
+        }
+        return rows.first ?? nil
     }
 
     // MARK: - Thread support (Phase A.2)
 
     /// Fetch all message heads sharing a `conversation_id`. Returns empty
     /// when the conversation doesn't exist. Excludes deleted messages.
+    /// `inReplyTo` left nil per row; consumers requiring it should call
+    /// `head(messageID:)` per-message which fills it via
+    /// `message_references` lookup.
     public func messageHeadsForConversation(_ conversationID: Int64) throws -> [MessageHead] {
         let sql = """
             SELECT m.ROWID,
                    m.mailbox,
-                   m.message_id,
+                   mgd.message_id_header,
                    m.conversation_id,
                    s.subject,
                    addr.address,
@@ -389,11 +425,13 @@ public actor MailStore {
                    m.date_received,
                    m.read,
                    m.flagged,
-                   m.size,
-                   m.in_reply_to
+                   m.size
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
-            LEFT JOIN addresses addr ON addr.ROWID = m.sender
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
             WHERE m.conversation_id = ?
               AND (m.deleted IS NULL OR m.deleted = 0)
             ORDER BY m.date_received ASC, m.ROWID ASC
@@ -413,7 +451,7 @@ public actor MailStore {
                 isFlagged: (int64(row, 9) ?? 0) != 0,
                 hasAttachments: false,
                 sizeBytes: int64(row, 10).map { Int($0) },
-                inReplyTo: string(row, 11)
+                inReplyTo: nil
             )
         }
         let ids = heads.map { $0.id }
@@ -432,7 +470,7 @@ public actor MailStore {
                 isFlagged: h.isFlagged,
                 hasAttachments: attachMap[h.id] ?? false,
                 sizeBytes: h.sizeBytes,
-                inReplyTo: h.inReplyTo
+                inReplyTo: nil
             )
         }
     }
@@ -440,11 +478,14 @@ public actor MailStore {
     /// Look up a message head by its RFC822 `Message-ID` header value.
     /// Returns `nil` when no match is found. Used by `In-Reply-To` /
     /// `References` thread reconstruction in `ThreadResolver`.
+    /// Real V10 stores the RFC822 string in
+    /// `message_global_data.message_id_header`, NOT
+    /// `messages.message_id` (which is an INTEGER hash/FK).
     public func messageHead(forMessageID rfcMessageID: String) throws -> MessageHead? {
         let sql = """
             SELECT m.ROWID,
                    m.mailbox,
-                   m.message_id,
+                   mgd.message_id_header,
                    m.conversation_id,
                    s.subject,
                    addr.address,
@@ -452,12 +493,14 @@ public actor MailStore {
                    m.date_received,
                    m.read,
                    m.flagged,
-                   m.size,
-                   m.in_reply_to
+                   m.size
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
-            LEFT JOIN addresses addr ON addr.ROWID = m.sender
-            WHERE m.message_id = ?
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
+            JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
+            WHERE mgd.message_id_header = ?
               AND (m.deleted IS NULL OR m.deleted = 0)
             LIMIT 1
             """
@@ -476,7 +519,7 @@ public actor MailStore {
                 isFlagged: (int64(row, 9) ?? 0) != 0,
                 hasAttachments: false,
                 sizeBytes: int64(row, 10).map { Int($0) },
-                inReplyTo: string(row, 11)
+                inReplyTo: nil
             )
         }
         return rows.first
