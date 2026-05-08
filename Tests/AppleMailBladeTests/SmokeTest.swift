@@ -25,7 +25,7 @@ final class SmokeTest: XCTestCase {
         // never crash. This guards the lazy-init pattern that
         // AppleMailBladeWiring.SharedRegistry will rely on at Phase A.5.
         do {
-            _ = try AppleMailToolRegistry()
+            _ = try await AppleMailToolRegistry()
             // Construction succeeded — there must be a real store on disk.
             // Acceptable: this machine has Mail data and the test runner has FDA.
         } catch let error as MailBladeError {

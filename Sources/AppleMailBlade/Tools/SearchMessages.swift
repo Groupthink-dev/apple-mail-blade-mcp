@@ -1,9 +1,11 @@
 import Foundation
 import MCP
 
-/// Handler for `apple_mail_search_messages`. v0.1.0 implementation: SQL `LIKE`
-/// against `subjects.subject` + `summaries.summary` — never opens `.emlx`.
-/// Real FTS attach is deferred to v0.2.0.
+/// Handler for `apple_mail_search_messages`. Routes between the FTS5
+/// sidecar (when healthy) and the LIKE fallback inside
+/// `MailStore.searchMessages`. Result shape is identical across paths.
+/// FTS5 path: ~30ms p95 on a 100k-message corpus; LIKE: 600–2000ms.
+/// See [[DD-256]] §A.4.
 public struct SearchMessagesHandler: Sendable {
     public let store: MailStore
 

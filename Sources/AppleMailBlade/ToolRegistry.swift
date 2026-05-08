@@ -36,8 +36,13 @@ public actor AppleMailToolRegistry {
     private let readAttachment: ReadAttachmentHandler
     private let readThread: ReadThreadHandler
     private let extractEntities: ExtractEntitiesHandler
+    private let indexStatus: IndexStatusHandler
+    private let reindex: ReindexHandler
 
-    public init(config: MailBladeConfig) throws {
+    public init(
+        config: MailBladeConfig,
+        fts5Client: (any MailFTS5QueryClient)? = nil
+    ) async throws {
         self.store = try MailStore(config: config)
         self.parser = EMLXParser(config: config)
         self.locator = EMLXLocator(config: config)
@@ -62,11 +67,23 @@ public actor AppleMailToolRegistry {
         self.extractEntities = ExtractEntitiesHandler(
             store: store, parser: parser, locator: locator, extractor: entityExtractor
         )
+        // DD-256 §A.4: index introspection + reindex control surface.
+        self.indexStatus = IndexStatusHandler(fts5Client: fts5Client)
+        self.reindex = ReindexHandler()
+
+        // Wire the FTS5 client into MailStore so `searchMessages` can
+        // route between FTS5 and LIKE per `isHealthyForQuery`. Nil
+        // client leaves MailStore on the LIKE path (existing v0.1.x
+        // behaviour).
+        if let fts5Client {
+            await store.setFTS5QueryClient(fts5Client)
+        }
     }
 
-    /// Convenience constructor using the default canonical Mail.app path.
-    public init() throws {
-        try self.init(config: try MailBladeConfig())
+    /// Convenience constructor using the default canonical Mail.app path
+    /// and no FTS5 client (LIKE path only).
+    public init() async throws {
+        try await self.init(config: try MailBladeConfig())
     }
 
     /// All tool definitions, suitable for ListTools response.
@@ -97,6 +114,10 @@ public actor AppleMailToolRegistry {
             return await readThread.handle(arguments: arguments)
         case "apple_mail_extract_entities":
             return await extractEntities.handle(arguments: arguments)
+        case "apple_mail_index_status":
+            return await indexStatus.handle(arguments: arguments)
+        case "apple_mail_reindex":
+            return await reindex.handle(arguments: arguments)
         default:
             return errorResult(.internalError("unknown tool: \(name)"))
         }

@@ -54,7 +54,7 @@ final class ReadMessageTests: XCTestCase {
             partIndex: 0,
             mboxRoot: archiveMbox
         )
-        self.registry = try AppleMailToolRegistry(config: config)
+        self.registry = try await AppleMailToolRegistry(config: config)
     }
 
     override func tearDown() async throws {

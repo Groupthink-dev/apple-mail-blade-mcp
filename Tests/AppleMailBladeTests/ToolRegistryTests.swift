@@ -4,9 +4,11 @@ import XCTest
 @testable import AppleMailBlade
 
 /// Tests for `AppleMailToolRegistry` — the public façade that StallariKit
-/// will call into at Phase A.5. These verify the surface stays at 9 tools,
-/// every tool name dispatches to a handler (live or stubbed), and unknown
-/// tool names degrade gracefully rather than throwing.
+/// calls into at Phase A.4 onwards. These verify the surface stays at 11
+/// tools (9 v0.1 mail tools + DD-256 §A.4 `apple_mail_index_status` and
+/// `apple_mail_reindex`), every tool name dispatches to a handler (live
+/// or stubbed), and unknown tool names degrade gracefully rather than
+/// throwing.
 final class ToolRegistryTests: XCTestCase {
 
     var storePath: String!
@@ -15,7 +17,7 @@ final class ToolRegistryTests: XCTestCase {
     override func setUp() async throws {
         let (config, path) = try SampleEnvelopeBuilder.makeSampleConfig()
         self.storePath = path
-        self.registry = try AppleMailToolRegistry(config: config)
+        self.registry = try await AppleMailToolRegistry(config: config)
     }
 
     override func tearDown() async throws {
@@ -28,9 +30,9 @@ final class ToolRegistryTests: XCTestCase {
 
     // MARK: - Surface
 
-    func testRegistryExposesExactlyNineTools() async throws {
+    func testRegistryExposesExactlyElevenTools() async throws {
         let tools = registry.tools()
-        XCTAssertEqual(tools.count, 9, "expected 9 tools, got \(tools.count)")
+        XCTAssertEqual(tools.count, 11, "expected 11 tools, got \(tools.count)")
     }
 
     func testRegistryToolNamesMatchSchemaDeclarations() async throws {
@@ -45,6 +47,8 @@ final class ToolRegistryTests: XCTestCase {
             "apple_mail_read_attachment",
             "apple_mail_read_thread",
             "apple_mail_extract_entities",
+            "apple_mail_index_status",
+            "apple_mail_reindex",
         ]
         XCTAssertEqual(names, expected)
     }

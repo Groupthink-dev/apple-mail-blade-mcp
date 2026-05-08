@@ -20,6 +20,21 @@ public actor MailStore {
     public let config: MailBladeConfig
     private let connection: Connection
 
+    /// Optional FTS5 query client for fast `apple_mail_search_messages`
+    /// routing (DD-256 §A.4). Nil in standalone-blade tests; the harness
+    /// wires a real impl post-construction. When non-nil and healthy,
+    /// `searchMessages` flips to the FTS5 path; otherwise falls through
+    /// to the LIKE path (`searchMessagesLIKE`) — same result shape, ~30×
+    /// slower on a 100k-message corpus.
+    private var fts5Client: (any MailFTS5QueryClient)?
+
+    /// Wire (or unwire) the FTS5 query client. Called by the harness
+    /// once `local-corpus-index.db` is open and the Mail blade adapter
+    /// has registered with `IndexCoordinator`.
+    public func setFTS5QueryClient(_ client: (any MailFTS5QueryClient)?) {
+        self.fts5Client = client
+    }
+
     /// Open the underlying SQLite database read-only.
     public init(config: MailBladeConfig) throws {
         self.config = config
@@ -202,10 +217,45 @@ public actor MailStore {
         }
     }
 
-    /// Search messages by subject or summary substring. v0.1.0 uses `LIKE`
-    /// against `subjects.subject` and `summaries.summary` — never opens
-    /// `.emlx`. Real FTS attach is deferred.
+    /// Search messages by subject or summary substring. Routes between
+    /// the FTS5 sidecar (when healthy) and the LIKE fallback. Result
+    /// shape is identical across paths.
+    ///
+    /// Routing decision (DD-256 §A.4): if a `MailFTS5QueryClient` is
+    /// wired AND it reports `isHealthyForQuery == true`, the FTS5 path
+    /// is used (~30ms on a 100k-message corpus). Otherwise the LIKE
+    /// path runs (~600–2000ms on the same corpus). Standalone-blade
+    /// builds always hit the LIKE path.
     public func searchMessages(
+        query: String,
+        accountID: Int64? = nil,
+        mailboxID: Int64? = nil,
+        since: Date? = nil,
+        limit: Int = 50
+    ) async throws -> [MessageSummary] {
+        if let client = fts5Client, await client.isHealthyForQuery {
+            return try await searchMessagesFTS5(
+                query: query,
+                accountID: accountID,
+                mailboxID: mailboxID,
+                since: since,
+                limit: limit,
+                client: client
+            )
+        }
+        return try searchMessagesLIKE(
+            query: query,
+            accountID: accountID,
+            mailboxID: mailboxID,
+            since: since,
+            limit: limit
+        )
+    }
+
+    /// LIKE-based fallback (the v0.1.x implementation, kept verbatim
+    /// behind a renamed entry point). Used when no FTS5 client is wired
+    /// or when the index is missing / behind / rebuilding.
+    public func searchMessagesLIKE(
         query: String,
         accountID: Int64? = nil,
         mailboxID: Int64? = nil,
@@ -281,6 +331,130 @@ public actor MailStore {
         let summaries = try runQuery(sql, bindings: bindings) {
             row -> MessageSummary in
             return MessageSummary(
+                id: int64(row, 0) ?? 0,
+                mailboxID: int64(row, 1) ?? 0,
+                messageID: string(row, 2),
+                conversationID: int64(row, 3),
+                subject: string(row, 4),
+                from: string(row, 5),
+                to: [],
+                dateSent: MailSchema.date(fromUnixEpoch: double(row, 6)),
+                dateReceived: MailSchema.date(fromUnixEpoch: double(row, 7)),
+                isRead: (int64(row, 8) ?? 0) != 0,
+                isFlagged: (int64(row, 9) ?? 0) != 0,
+                hasAttachments: false,
+                snippet: string(row, 11),
+                sizeBytes: int64(row, 10).map { Int($0) }
+            )
+        }
+        let ids = summaries.map { $0.id }
+        let toMap = try fetchToRecipients(messageIDs: ids)
+        let attachMap = try fetchAttachmentPresence(messageIDs: ids)
+        return summaries.map { s in
+            MessageSummary(
+                id: s.id,
+                mailboxID: s.mailboxID,
+                messageID: s.messageID,
+                conversationID: s.conversationID,
+                subject: s.subject,
+                from: s.from,
+                to: toMap[s.id] ?? [],
+                dateSent: s.dateSent,
+                dateReceived: s.dateReceived,
+                isRead: s.isRead,
+                isFlagged: s.isFlagged,
+                hasAttachments: attachMap[s.id] ?? false,
+                snippet: s.snippet,
+                sizeBytes: s.sizeBytes
+            )
+        }
+    }
+
+    /// FTS5-backed fast path (DD-256 §A.4). Asks the harness's
+    /// `MailFTS5QueryClient` for matching ROWIDs, then SQL-joins back
+    /// to the live `messages` table for filters + result shape.
+    ///
+    /// Same filter set as `searchMessagesLIKE`: deletion, mailbox,
+    /// account-derived mailbox set, since. The join-back is
+    /// authoritative for deletions (FTS5 may carry stale rows for
+    /// recently-deleted messages until the next reindex).
+    private func searchMessagesFTS5(
+        query: String,
+        accountID: Int64?,
+        mailboxID: Int64?,
+        since: Date?,
+        limit: Int,
+        client: any MailFTS5QueryClient
+    ) async throws -> [MessageSummary] {
+        let cappedLimit = min(max(1, limit), config.maxResultsHardCap)
+        let rowIDs = try await client.searchFTS5(query: query, limit: cappedLimit)
+        if rowIDs.isEmpty { return [] }
+
+        // Resolve account-scoped mailbox set up front, mirroring the
+        // LIKE path's logic.
+        var mailboxIDFilter: [Int64]? = nil
+        if let accountID = accountID {
+            let mailboxes = try listMailboxes(accountID: accountID)
+            mailboxIDFilter = mailboxes.map { $0.id }
+            if mailboxIDFilter?.isEmpty == true {
+                return []
+            }
+        }
+
+        let placeholders = Array(repeating: "?", count: rowIDs.count).joined(separator: ", ")
+        var sql = """
+            SELECT m.ROWID,
+                   m.mailbox,
+                   mgd.message_id_header,
+                   m.conversation_id,
+                   s.subject,
+                   addr.address,
+                   m.date_sent,
+                   m.date_received,
+                   m.read,
+                   m.flagged,
+                   m.size,
+                   summ.summary
+            FROM messages m
+            LEFT JOIN subjects s ON s.ROWID = m.subject
+            LEFT JOIN senders sndr ON sndr.ROWID = m.sender
+            LEFT JOIN sender_addresses sa ON sa.sender = sndr.ROWID
+            LEFT JOIN addresses addr ON addr.ROWID = sa.address
+            LEFT JOIN summaries summ ON summ.ROWID = m.summary
+            LEFT JOIN message_global_data mgd ON mgd.ROWID = m.global_message_id
+            """
+        var bindings: [Binding?] = []
+
+        var whereClauses = [
+            "(m.deleted IS NULL OR m.deleted = 0)",
+            "m.ROWID IN (\(placeholders))",
+        ]
+        for rowID in rowIDs { bindings.append(rowID) }
+
+        if let mailboxID = mailboxID {
+            whereClauses.append("m.mailbox = ?")
+            bindings.append(mailboxID)
+        }
+        if let mailboxIDFilter = mailboxIDFilter {
+            let mbPlaceholders = Array(repeating: "?", count: mailboxIDFilter.count).joined(separator: ", ")
+            whereClauses.append("m.mailbox IN (\(mbPlaceholders))")
+            for id in mailboxIDFilter { bindings.append(id) }
+        }
+        if let since = since {
+            whereClauses.append("m.date_received >= ?")
+            bindings.append(since.timeIntervalSince1970)
+        }
+
+        sql += "\nWHERE " + whereClauses.joined(separator: "\n  AND ") + "\n"
+        sql += """
+            ORDER BY m.date_received DESC
+            LIMIT ?
+            """
+        bindings.append(Int64(cappedLimit))
+
+        let summaries = try runQuery(sql, bindings: bindings) {
+            row -> MessageSummary in
+            MessageSummary(
                 id: int64(row, 0) ?? 0,
                 mailboxID: int64(row, 1) ?? 0,
                 messageID: string(row, 2),

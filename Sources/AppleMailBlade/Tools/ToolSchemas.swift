@@ -231,12 +231,51 @@ public enum MailToolSchemas {
         ])
     )
 
-    /// All tool schemas in registration order — 9 tools total.
+    public static let indexStatus = Tool(
+        name: "apple_mail_index_status",
+        description:
+            "Return the current FTS5 index health snapshot — consent state, "
+            + "watermark, lag, last-indexed timestamps, pending-reindex flag. "
+            + "Skills check this before relying on FTS-backed search "
+            + "(DD-256 §A.4).",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([:]),
+            "additionalProperties": .bool(false),
+        ])
+    )
+
+    public static let reindex = Tool(
+        name: "apple_mail_reindex",
+        description:
+            "Request a full FTS5 rebuild. Returns immediately; the rebuild "
+            + "runs out of band on the indexer's poll task. Subject to the "
+            + "AC-power gate unless `force: true` is supplied. Status is "
+            + "observable via `apple_mail_index_status` (DD-256 §A.4).",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "force": .object([
+                    "type": .string("boolean"),
+                    "default": .bool(false),
+                    "description": .string(
+                        "If true, bypass the AC-power gate and run immediately. "
+                        + "Default false: queue a `pending_full_reindex` flag and "
+                        + "drain on the next AC-on tick."
+                    ),
+                ]),
+            ]),
+            "additionalProperties": .bool(false),
+        ])
+    )
+
+    /// All tool schemas in registration order — 11 tools total.
     public static func all() -> [Tool] {
         [
             listAccounts, listMailboxes, listMessages, searchMessages, head,
             readMessage, readAttachment, readThread,
             extractEntities,
+            indexStatus, reindex,
         ]
     }
 }
