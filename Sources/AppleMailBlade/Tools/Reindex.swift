@@ -28,21 +28,33 @@ public struct ReindexHandler: Sendable {
             return errorResult(.internalError("`force` must be a boolean if provided"))
         }
 
-        // Post the in-process request notification. The harness
-        // wiring (AppleMailBladeWiring) observes this and forwards
-        // to `IndexCoordinator.requestReindex(blade: "mail",
-        // force: force)`.
+        // Post the request via DistributedNotificationCenter (DD-256
+        // §A.5) so the SwiftUI Settings tile in the app process and
+        // the harness observer in the daemon process see the same
+        // event. The tool itself runs inside the daemon, so a local
+        // post would also work for that path — but the cross-process
+        // case (the SwiftUI "Reindex now" button) needs distributed,
+        // and using one channel keeps the substrate simple.
         //
         // Standalone-blade mode (no harness wired): nobody subscribes.
         // The tool returns an "accepted" result anyway; consumers that
         // depend on the reindex actually running should poll
         // `apple_mail_index_status` and confirm `pending_full_reindex`
         // toggled.
+        #if os(macOS)
+        DistributedNotificationCenter.default().postNotificationName(
+            .mailIndexReindexRequested,
+            object: nil,
+            userInfo: ["force": force],
+            deliverImmediately: true
+        )
+        #else
         NotificationCenter.default.post(
             name: .mailIndexReindexRequested,
             object: nil,
             userInfo: ["force": force]
         )
+        #endif
 
         struct Accepted: Codable, Sendable {
             let accepted: Bool

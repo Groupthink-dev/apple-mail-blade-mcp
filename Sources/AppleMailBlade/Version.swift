@@ -7,5 +7,5 @@
 
 extension AppleMailBlade {
     /// Library SemVer. Update this string at the same commit as the git tag.
-    public static let semver = "0.2.0"
+    public static let semver = "0.2.1"
 }
