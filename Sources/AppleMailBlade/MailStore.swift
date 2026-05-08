@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SQLite
 
@@ -682,6 +683,139 @@ public actor MailStore {
             return .storeLocked
         }
         return .sqliteError(code: code, message: message)
+    }
+
+    // MARK: - Indexer hooks (DD-256 Phase A.3a)
+    //
+    // These two methods exist for the harness-resident
+    // `AppleMailBladeIndexer` (in stallari-harness) to drive the shared
+    // local-corpus FTS5 store. They're additive — no existing callers
+    // touch them. Returning concrete value types (not closures or
+    // protocols) keeps the SemVer surface honest: a future change here
+    // must bump the blade minor version.
+    //
+    // Both methods read from the same connection as the rest of the
+    // actor; they inherit the read-only + busy-timeout posture.
+
+    /// One row emitted by ``messagesAfterROWID(_:limit:)`` — the precise
+    /// shape the FTS5 index wants to ingest. ROWID is the upstream
+    /// `messages.ROWID` so the harness query path can join back to the
+    /// canonical table at search time and filter out deletions.
+    public struct IndexableMessageRow: Sendable, Equatable {
+        public let rowID: Int64
+        public let subject: String
+        public let summary: String
+        public let fromAddr: String
+        public let toAddrs: String
+
+        public init(
+            rowID: Int64,
+            subject: String,
+            summary: String,
+            fromAddr: String,
+            toAddrs: String
+        ) {
+            self.rowID = rowID
+            self.subject = subject
+            self.summary = summary
+            self.fromAddr = fromAddr
+            self.toAddrs = toAddrs
+        }
+    }
+
+    /// Return up to `limit` messages whose ROWID exceeds `watermark`,
+    /// ordered ascending by ROWID. Joins back to `subjects`,
+    /// `summaries`, and `addresses` so the harness adapter doesn't have
+    /// to re-implement the join graph.
+    ///
+    /// `to_addrs` is comma-joined `addresses.address` for every row in
+    /// `recipients` whose `type IN (0, 1)` (`to` and `cc`). `bcc` is
+    /// excluded — these rows feed an FTS5 index that surfaces in user
+    /// search; bcc is an intentionally privileged channel we don't want
+    /// to re-surface inadvertently.
+    ///
+    /// Excludes rows where `messages.deleted = 1` so the index never
+    /// ingests tombstoned messages in the first place.
+    public func messagesAfterROWID(_ watermark: Int64, limit: Int) throws -> [IndexableMessageRow] {
+        let sql = """
+            SELECT
+                m.ROWID                                  AS rowid,
+                COALESCE(s.subject, '')                  AS subject,
+                COALESCE(sm.summary, '')                 AS summary,
+                COALESCE(sender_addr.address, '')        AS from_addr,
+                COALESCE((
+                    SELECT GROUP_CONCAT(addr.address, ', ')
+                    FROM recipients r
+                    JOIN addresses addr ON addr.ROWID = r.address
+                    WHERE r.message = m.ROWID AND r.type IN (0, 1)
+                ), '')                                   AS to_addrs
+            FROM messages m
+            LEFT JOIN subjects  s           ON s.ROWID = m.subject
+            LEFT JOIN summaries sm          ON sm.ROWID = m.summary
+            LEFT JOIN addresses sender_addr ON sender_addr.ROWID = m.sender
+            WHERE m.ROWID > ?
+              AND COALESCE(m.deleted, 0) = 0
+            ORDER BY m.ROWID ASC
+            LIMIT ?
+            """
+
+        let stmt = try connection.prepare(sql)
+        var out: [IndexableMessageRow] = []
+        out.reserveCapacity(min(limit, 256))
+        for row in try stmt.run(watermark, limit) {
+            guard let rowID = int64(row, 0) else { continue }
+            out.append(IndexableMessageRow(
+                rowID: rowID,
+                subject: string(row, 1) ?? "",
+                summary: string(row, 2) ?? "",
+                fromAddr: string(row, 3) ?? "",
+                toAddrs: string(row, 4) ?? ""
+            ))
+        }
+        return out
+    }
+
+    /// A "what version of the world is this" digest of the canonical
+    /// store. Used by the indexer to decide whether an incremental tick
+    /// suffices or a full reindex is required (Mail.app reorganised,
+    /// account remove/re-add, mailbox URL change, …).
+    ///
+    /// Implementation: hash a SHA-256 of `(mailbox.url, change_identifier,
+    /// total_count)` triples sorted by `mailbox.url`. Per the Schema
+    /// reference (`Schema.swift`) `change_identifier` is a TEXT column on
+    /// `mailboxes` that Mail.app updates when the mailbox state changes.
+    /// Falling back to `total_count` covers the case where
+    /// `change_identifier` is absent on a future macOS — the count alone
+    /// is a coarse but safe shift signal.
+    ///
+    /// Returns the hex string of the SHA-256 digest. A change in any
+    /// component flips the digest deterministically.
+    public func currentChangeIdentifier() throws -> String {
+        let stmt = try connection.prepare("""
+            SELECT
+                COALESCE(url, '')                AS url,
+                COALESCE(change_identifier, '')  AS change_identifier,
+                COALESCE(total_count, 0)         AS total_count
+            FROM mailboxes
+            ORDER BY url ASC
+            """)
+
+        var lines: [String] = []
+        for row in try stmt.run() {
+            let url = string(row, 0) ?? ""
+            let changeID = string(row, 1) ?? ""
+            let count = int64(row, 2) ?? 0
+            lines.append("\(url)\u{1F}\(changeID)\u{1F}\(count)")
+        }
+        let canonical = lines.joined(separator: "\u{1E}")
+        return Self.sha256Hex(canonical)
+    }
+
+    /// SHA-256(value) → lowercase hex string. CryptoKit ships with the
+    /// OS so this adds no dependency.
+    private static func sha256Hex(_ value: String) -> String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Row helpers
