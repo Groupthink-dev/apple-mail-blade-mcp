@@ -2,6 +2,8 @@ import Foundation
 import MCP
 
 /// Handler for `apple_mail_list_mailboxes`. Optional `account_id` filter.
+///
+/// DD-338 Phase C Wave 5: emits canonical `_meta:` envelope (B-tier promotion).
 public struct ListMailboxesHandler: Sendable {
     public let store: MailStore
 
@@ -15,9 +17,25 @@ public struct ListMailboxesHandler: Sendable {
             return Int64(i)
         }()
 
+        let t0 = ContinuousClock.now
         do {
             let mailboxes = try await store.listMailboxes(accountID: accountID)
-            return makeResult(payload: ListMailboxesResponse(mailboxes: mailboxes))
+            let elapsed = ContinuousClock.now - t0
+            var filteredBy: [String] = []
+            if let accountID {
+                filteredBy.append("account_id=\(accountID)")
+            }
+            filteredBy.sort()
+            let meta = MetaEnvelope(
+                matchedTotal: mailboxes.count,
+                returned: mailboxes.count,
+                filteredBy: filteredBy,
+                latencyMs: elapsed.toMilliseconds()
+            )
+            return makeResultWithMeta(
+                payload: ListMailboxesResponse(mailboxes: mailboxes),
+                meta: meta
+            )
         } catch let error as MailBladeError {
             return errorResult(error)
         } catch {

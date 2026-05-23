@@ -28,6 +28,24 @@ func makeResult<T: Codable>(payload: T) -> CallTool.Result {
     }
 }
 
+/// Wrap any `Codable` payload + a DD-338 `_meta:` envelope as a `CallTool.Result`.
+/// The envelope is appended to the JSON payload via the canonical `\n\n` separator
+/// per `appendMeta`. On encode failure falls through to `errorResult(.internalError(...))`
+/// (no envelope on errors per Wave 3 OQ-7 ratification).
+///
+/// Use at every Track-promoted handler site to avoid per-handler boilerplate around
+/// encode + envelope-append. See `MetaEnvelope.swift` for the helper module.
+func makeResultWithMeta<T: Codable>(payload: T, meta: MetaEnvelope) -> CallTool.Result {
+    do {
+        let data = try makeToolEncoder().encode(payload)
+        let json = String(data: data, encoding: .utf8) ?? "{}"
+        let text = appendMeta(json, formatMetaLine(meta))
+        return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
+    } catch {
+        return errorResult(.internalError("encode_failure"))
+    }
+}
+
 /// Wrap a `MailBladeError` as an error result. The `error` shape is stable;
 /// consumer-side skills can switch on `error.code`.
 func errorResult(_ error: MailBladeError) -> CallTool.Result {

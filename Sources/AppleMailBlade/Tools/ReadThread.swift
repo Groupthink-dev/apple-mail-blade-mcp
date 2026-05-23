@@ -5,6 +5,12 @@ import MCP
 /// from the requested message ID. Walks `messages.conversation_id` first,
 /// falls back to `In-Reply-To` / `References` headers. Cross-account hops
 /// are flagged on each `ThreadMessage`.
+///
+/// DD-338 Phase C Wave 5: emits canonical `_meta:` envelope (B-tier promotion).
+/// `redactions: ["cross_account_hops=N"]` REQUIRED when N > 0 per OQ-3 (b)
+/// ratification — load-bearing for DD-278 scope-violation audit on
+/// cross-account thread reconstruction. Coupled with `apple_mail_list_accounts`
+/// staying C (audit baseline for these hops).
 public struct ReadThreadHandler: Sendable {
     public let resolver: ThreadResolver
 
@@ -18,9 +24,25 @@ public struct ReadThreadHandler: Sendable {
         }
         let messageID = Int64(idRaw)
 
+        let t0 = ContinuousClock.now
         do {
             let thread = try await resolver.resolve(messageID: messageID)
-            return makeResult(payload: ReadThreadResponse(thread: thread))
+            let elapsed = ContinuousClock.now - t0
+            let crossAccountCount = thread.filter { $0.crossAccount }.count
+            let redactions: [String]? = crossAccountCount > 0
+                ? ["cross_account_hops=\(crossAccountCount)"]
+                : nil
+            let meta = MetaEnvelope(
+                matchedTotal: thread.count,
+                returned: thread.count,
+                filteredBy: ["message_id=\(messageID)"],
+                latencyMs: elapsed.toMilliseconds(),
+                redactions: redactions
+            )
+            return makeResultWithMeta(
+                payload: ReadThreadResponse(thread: thread),
+                meta: meta
+            )
         } catch let error as MailBladeError {
             return errorResult(error)
         } catch {
