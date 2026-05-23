@@ -329,10 +329,20 @@ final class MetaEnvelopeTests: XCTestCase {
         }
     }
 
-    func testReadThreadDeterminism() async {
+    func testReadThreadDeterminism() async throws {
+        // Structural equality (parsed dict compare) rather than string equality —
+        // the underlying handler's payload encoder doesn't use `.sortedKeys`
+        // (only the MetaEnvelope helper does, per Precedent #3). Foundation
+        // Dictionary iteration is non-deterministic on macos-15 CI runners but
+        // happens to be stable locally; assembler parses JSON not byte-hashes
+        // it, so structural equality is the load-bearing determinism property.
         let textA = await call("apple_mail_read_thread", ["message_id": .int(1)])
         let textB = await call("apple_mail_read_thread", ["message_id": .int(1)])
-        XCTAssertEqual(payloadJSON(from: textA), payloadJSON(from: textB))
+        let dataA = try XCTUnwrap(payloadJSON(from: textA).data(using: .utf8))
+        let dataB = try XCTUnwrap(payloadJSON(from: textB).data(using: .utf8))
+        let dictA = try JSONSerialization.jsonObject(with: dataA) as? NSDictionary
+        let dictB = try JSONSerialization.jsonObject(with: dataB) as? NSDictionary
+        XCTAssertEqual(dictA, dictB)
     }
 
     // MARK: - existing-payload preservation
