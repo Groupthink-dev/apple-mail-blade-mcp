@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// Handler for `apple_mail_read_thread`. Reconstructs a thread starting
 /// from the requested message ID. Walks `messages.conversation_id` first,
@@ -29,14 +30,14 @@ public struct ReadThreadHandler: Sendable {
             let thread = try await resolver.resolve(messageID: messageID)
             let elapsed = ContinuousClock.now - t0
             let crossAccountCount = thread.filter { $0.crossAccount }.count
-            let redactions: [String]? = crossAccountCount > 0
+            let redactions: [String] = crossAccountCount > 0
                 ? ["cross_account_hops=\(crossAccountCount)"]
-                : nil
+                : []
             let meta = MetaEnvelope(
                 matchedTotal: thread.count,
                 returned: thread.count,
-                filteredBy: ["message_id=\(messageID)"],
                 latencyMs: elapsed.toMilliseconds(),
+                filteredBy: ["message_id=\(messageID)"],
                 redactions: redactions
             )
             return makeResultWithMeta(

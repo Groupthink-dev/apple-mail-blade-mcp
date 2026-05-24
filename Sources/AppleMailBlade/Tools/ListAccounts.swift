@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// Handler for `apple_mail_list_accounts`. Derives accounts from `mailboxes.url`
 /// prefixes — see `MailSchema.accountKey(fromMailboxURL:)`. No arguments.
@@ -22,8 +23,8 @@ public struct ListAccountsHandler: Sendable {
             let meta = MetaEnvelope(
                 matchedTotal: accounts.count,
                 returned: accounts.count,
-                filteredBy: [],
-                latencyMs: elapsed.toMilliseconds()
+                latencyMs: elapsed.toMilliseconds(),
+                filteredBy: []
             )
             return makeResultWithMeta(
                 payload: ListAccountsResponse(accounts: accounts),

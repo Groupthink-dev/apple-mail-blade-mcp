@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// Handler for `apple_mail_list_mailboxes`. Optional `account_id` filter.
 ///
@@ -29,8 +30,8 @@ public struct ListMailboxesHandler: Sendable {
             let meta = MetaEnvelope(
                 matchedTotal: mailboxes.count,
                 returned: mailboxes.count,
-                filteredBy: filteredBy,
-                latencyMs: elapsed.toMilliseconds()
+                latencyMs: elapsed.toMilliseconds(),
+                filteredBy: filteredBy
             )
             return makeResultWithMeta(
                 payload: ListMailboxesResponse(mailboxes: mailboxes),

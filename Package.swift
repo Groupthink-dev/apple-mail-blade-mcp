@@ -17,7 +17,7 @@ import PackageDescription
 let package = Package(
     name: "apple-mail-blade-mcp",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .library(
@@ -33,6 +33,10 @@ let package = Package(
         // (Apple's Envelope Index is plain SQLite); enabling the trait is
         // purely for resolution compatibility.
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.3", traits: ["SQLCipher"]),
+        // Canonical _meta: envelope helpers (DD-338 Phase E.swift). Replaces
+        // the previously hand-rolled Sources/AppleMailBlade/MetaEnvelope.swift
+        // (deleted in DD-338 Phase C Wave 5).
+        .package(url: "https://github.com/Groupthink-dev/stallari-mcp-helpers-swift", from: "0.1.0"),
     ],
     targets: [
         .target(
@@ -40,6 +44,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "SQLite", package: "SQLite.swift"),
+                .product(name: "MCPHelpers", package: "stallari-mcp-helpers-swift"),
             ]
         ),
         .testTarget(

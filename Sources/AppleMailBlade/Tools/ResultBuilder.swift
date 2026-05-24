@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// JSON encoder used by all tool handlers. ISO-8601 dates with fractional
 /// seconds; pretty-print disabled (consumer-facing JSON, not human-edit).
@@ -34,12 +35,15 @@ func makeResult<T: Codable>(payload: T) -> CallTool.Result {
 /// (no envelope on errors per Wave 3 OQ-7 ratification).
 ///
 /// Use at every Track-promoted handler site to avoid per-handler boilerplate around
-/// encode + envelope-append. See `MetaEnvelope.swift` for the helper module.
+/// encode + envelope-append. Envelope construction + formatting uses the canonical
+/// `MCPHelpers` SPM dep (DD-338 Phase C Wave 5; replaces former hand-rolled
+/// Sources/AppleMailBlade/MetaEnvelope.swift).
 func makeResultWithMeta<T: Codable>(payload: T, meta: MetaEnvelope) -> CallTool.Result {
     do {
         let data = try makeToolEncoder().encode(payload)
         let json = String(data: data, encoding: .utf8) ?? "{}"
-        let text = appendMeta(json, formatMetaLine(meta))
+        let line = try formatMetaLine(meta)
+        let text = appendMeta(json, line)
         return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
     } catch {
         return errorResult(.internalError("encode_failure"))
