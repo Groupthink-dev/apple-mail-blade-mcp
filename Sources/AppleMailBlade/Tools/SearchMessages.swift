@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// Handler for `apple_mail_search_messages`. Routes between the FTS5
 /// sidecar (when healthy) and the LIKE fallback inside
@@ -68,8 +69,8 @@ public struct SearchMessagesHandler: Sendable {
             let meta = MetaEnvelope(
                 matchedTotal: results.count,
                 returned: results.count,
-                filteredBy: filteredBy,
-                latencyMs: elapsed.toMilliseconds()
+                latencyMs: elapsed.toMilliseconds(),
+                filteredBy: filteredBy
             )
             return makeResultWithMeta(
                 payload: SearchMessagesResponse(query: query, results: results),

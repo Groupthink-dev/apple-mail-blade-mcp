@@ -7,8 +7,21 @@
 //   - apple_mail_list_messages (B)
 //   - apple_mail_search_messages (B)
 //   - apple_mail_read_thread (B)
+//
+// Post-DD-338-Phase-C-Wave-5 cutover: envelope construction + formatting now
+// flow through the canonical `MCPHelpers` SPM dep
+// (https://github.com/Groupthink-dev/stallari-mcp-helpers-swift). Canonical
+// wire-shape vs. the hand-rolled v1 differs in two ways exercised by these
+// tests:
+//   - `redactions` ALWAYS emitted (defaults to `[]`); was omitted when empty
+//   - `next_cursor` ALWAYS emitted (JSON `null` when nil); was omitted when nil
+//   - `filtered_by` alphabetically sorted by the formatter (caller no longer
+//     needs to pre-sort; existing pre-sort calls remain harmless)
+//   - `formatMetaLine` now throws (encoding-failure surface; unreachable in
+//     practice for our value types)
 
 import MCP
+import MCPHelpers
 import XCTest
 
 @testable import AppleMailBlade
@@ -39,56 +52,79 @@ final class MetaEnvelopeTests: XCTestCase {
         return extractText(from: result)
     }
 
-    func testMetaEnvelopeFormatterByteShape() {
-        // Spot-check the formatter directly: required-only → exactly 4 keys.
+    func testMetaEnvelopeFormatterByteShape() throws {
+        // Canonical MCPHelpers shape: ALWAYS emits matched_total, returned,
+        // filtered_by, latency_ms, redactions, next_cursor (6 required keys).
+        // error_notes omitted when nil/empty. `filtered_by` sorted alphabetically.
         let meta = MetaEnvelope(
             matchedTotal: 42,
             returned: 10,
-            filteredBy: ["mailbox_id=23", "limit=10"],
-            latencyMs: 87
+            latencyMs: 87,
+            filteredBy: ["mailbox_id=23", "limit=10"]
         )
-        let line = formatMetaLine(meta)
+        let line = try formatMetaLine(meta)
         XCTAssertTrue(line.hasPrefix("_meta: "))
         let json = String(line.dropFirst("_meta: ".count))
         let data = json.data(using: .utf8)!
         let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         XCTAssertNotNil(parsed)
-        XCTAssertEqual(parsed?.count, 4)
+        XCTAssertEqual(parsed?.count, 6)
         XCTAssertEqual(parsed?["matched_total"] as? Int, 42)
         XCTAssertEqual(parsed?["returned"] as? Int, 10)
-        XCTAssertEqual(parsed?["filtered_by"] as? [String], ["mailbox_id=23", "limit=10"])
+        // Canonical sorts filtered_by; ["limit=10", "mailbox_id=23"] (alphabetical).
+        XCTAssertEqual(parsed?["filtered_by"] as? [String], ["limit=10", "mailbox_id=23"])
         XCTAssertEqual(parsed?["latency_ms"] as? Int, 87)
+        XCTAssertEqual(parsed?["redactions"] as? [String], [])
+        // next_cursor: JSON `null` -> NSNull on parse.
+        XCTAssertTrue(parsed?["next_cursor"] is NSNull)
     }
 
-    func testMetaEnvelopeOmitsEmptyOptionals() {
+    func testMetaEnvelopeAlwaysEmitsRedactionsAndNextCursor() throws {
+        // Canonical contract: redactions + next_cursor are REQUIRED fields.
+        // Empty redactions → `[]`; nil next_cursor → JSON `null`. error_notes
+        // alone is the omit-when-empty optional.
         let meta = MetaEnvelope(
             matchedTotal: 1,
             returned: 1,
-            filteredBy: [],
             latencyMs: 0,
+            filteredBy: [],
             redactions: [],
             nextCursor: nil,
             errorNotes: []
         )
-        let line = formatMetaLine(meta)
-        XCTAssertFalse(line.contains("redactions"))
-        XCTAssertFalse(line.contains("next_cursor"))
+        let line = try formatMetaLine(meta)
+        XCTAssertTrue(line.contains("\"redactions\":[]"))
+        XCTAssertTrue(line.contains("\"next_cursor\":null"))
         XCTAssertFalse(line.contains("error_notes"))
     }
 
-    func testMetaEnvelopeIncludesPresentOptionals() {
+    func testMetaEnvelopeIncludesPresentRedactions() throws {
         let meta = MetaEnvelope(
             matchedTotal: 2,
             returned: 2,
-            filteredBy: [],
             latencyMs: 5,
+            filteredBy: [],
             redactions: ["cross_account_hops=1"],
             nextCursor: nil,
             errorNotes: nil
         )
-        let line = formatMetaLine(meta)
+        let line = try formatMetaLine(meta)
         XCTAssertTrue(line.contains("\"redactions\":[\"cross_account_hops=1\"]"))
-        XCTAssertFalse(line.contains("next_cursor"))
+        XCTAssertTrue(line.contains("\"next_cursor\":null"))
+    }
+
+    func testMetaEnvelopeFilteredBySortedByFormatter() throws {
+        // Canonical formatter sorts filteredBy alphabetically — caller order
+        // is no longer load-bearing. Tools may still pre-sort for clarity;
+        // outcome is identical.
+        let meta = MetaEnvelope(
+            matchedTotal: 0,
+            returned: 0,
+            latencyMs: 0,
+            filteredBy: ["z=1", "a=2", "m=3"]
+        )
+        let line = try formatMetaLine(meta)
+        XCTAssertTrue(line.contains("\"filtered_by\":[\"a=2\",\"m=3\",\"z=1\"]"))
     }
 
     func testMetaQueryDigestIsDeterministic() {
@@ -233,11 +269,14 @@ final class MetaEnvelopeTests: XCTestCase {
         XCTAssertEqual(meta?["matched_total"] as? Int, meta?["returned"] as? Int)
     }
 
-    func testListMessagesNextCursorOmitted() async {
-        // Per Wave 5 OQ-6: offset-paginated tools OMIT next_cursor.
+    func testListMessagesNextCursorAlwaysPresentAsNull() async {
+        // Per canonical MCPHelpers contract: next_cursor is REQUIRED; offset-
+        // paginated tools emit JSON `null`. Was omit-when-nil in hand-rolled v1
+        // (DD-338 W5 OQ-6) — canonical promotes to always-present.
         let text = await call("apple_mail_list_messages", ["mailbox_id": .int(1)])
         let meta = parseMeta(from: text)
-        XCTAssertNil(meta?["next_cursor"])
+        XCTAssertNotNil(meta)
+        XCTAssertTrue(meta?["next_cursor"] is NSNull)
     }
 
     // MARK: - apple_mail_search_messages (B)
@@ -313,19 +352,18 @@ final class MetaEnvelopeTests: XCTestCase {
         XCTAssertEqual(fb, ["message_id=1"])
     }
 
-    func testReadThreadRedactionsOmittedWhenNoCrossAccount() async {
-        // Mailbox 1 lives in the imap account; a thread seeded from one of its
-        // messages typically does not cross accounts in the fixture.
+    func testReadThreadRedactionsAlwaysPresent() async {
+        // Per canonical MCPHelpers contract: redactions is REQUIRED. When no
+        // cross-account hops, the array is empty (`[]`). Was omit-when-empty
+        // in hand-rolled v1 — canonical promotes to always-present.
         let text = await call("apple_mail_read_thread", ["message_id": .int(1)])
         let meta = parseMeta(from: text)
-        // If no cross-account hops, redactions key MUST be absent.
-        if let thread = parseMeta(from: text), let total = thread["matched_total"] as? Int, total > 0 {
-            // Verify the absence convention.
-            let r = meta?["redactions"]
-            // r may be nil (key absent) or an array containing only cross_account_hops=N.
-            if let arr = r as? [String] {
-                XCTAssertFalse(arr.contains(where: { $0 == "cross_account_hops=0" }))
-            }
+        XCTAssertNotNil(meta?["redactions"])
+        let r = meta?["redactions"] as? [String]
+        XCTAssertNotNil(r)
+        // No "cross_account_hops=0" entry — only positive counts surface.
+        if let arr = r {
+            XCTAssertFalse(arr.contains(where: { $0 == "cross_account_hops=0" }))
         }
     }
 
@@ -352,5 +390,28 @@ final class MetaEnvelopeTests: XCTestCase {
         let text = await call("apple_mail_list_accounts")
         XCTAssertTrue(text.contains("\"accounts\""))
         XCTAssertTrue(text.contains("\n\n_meta: "))
+    }
+
+    // MARK: - canonical-shape gate (DD-338 W5 acceptance criterion)
+
+    func testFormatMetaLineEmitsCanonicalMCPHelpersShape() throws {
+        // Gate against future drift between this blade's emission and the
+        // canonical MCPHelpers wire shape. The canonical input/output pair
+        // mirrors the MCPHelpers Swift v0.1.0 own test fixture: required
+        // fields populated, optional errorNotes omitted, filtered_by sorted.
+        let meta = MetaEnvelope(
+            matchedTotal: 100,
+            returned: 25,
+            latencyMs: 12,
+            filteredBy: ["b=2", "a=1"],
+            redactions: [],
+            nextCursor: nil,
+            errorNotes: nil
+        )
+        let line = try formatMetaLine(meta)
+        XCTAssertEqual(
+            line,
+            #"_meta: {"matched_total":100,"returned":25,"filtered_by":["a=1","b=2"],"latency_ms":12,"redactions":[],"next_cursor":null}"#
+        )
     }
 }

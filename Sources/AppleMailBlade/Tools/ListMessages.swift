@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import MCPHelpers
 
 /// Handler for `apple_mail_list_messages`. Index-only — never opens `.emlx`.
 ///
@@ -66,8 +67,8 @@ public struct ListMessagesHandler: Sendable {
             let meta = MetaEnvelope(
                 matchedTotal: messages.count,
                 returned: messages.count,
-                filteredBy: filteredBy,
-                latencyMs: elapsed.toMilliseconds()
+                latencyMs: elapsed.toMilliseconds(),
+                filteredBy: filteredBy
             )
             return makeResultWithMeta(
                 payload: ListMessagesResponse(messages: messages),
