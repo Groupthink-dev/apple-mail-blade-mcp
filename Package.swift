@@ -11,8 +11,12 @@ import PackageDescription
 // Consumed only via StallariKit's internal tool registry. Never exposed on the
 // daemon's public :9847/mcp HTTP MCP surface. See README §"No external exposure".
 //
-// MCP dependency URL-pinned to piersdd/swift-sdk fork per DD-295 Phase C; promote
-// to upstream when modelcontextprotocol/swift-sdk#NNN merges.
+// MCP dependency tracks upstream modelcontextprotocol/swift-sdk. It was formerly
+// URL-pinned to the piersdd fork (DD-295 Phase C), but that fork's 0.12.1 tag
+// carried no local patches — it was a strict ancestor of upstream 0.12.1 — so the
+// pin bought nothing while colliding with upstream's own 0.12.1 and freezing us
+// off the upgrade path. The fork's one real patch (stallari/client-loop-no-repeat)
+// is consumed only by stallari-harness.
 
 let package = Package(
     name: "apple-mail-blade-mcp",
@@ -26,7 +30,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/piersdd/swift-sdk.git", from: "0.12.1"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         // SQLite.swift with SQLCipher trait — matches stallari-harness'
         // SPM trait declaration so the merged graph resolves cleanly when
         // this library is embedded as an SPM dep. We don't *use* SQLCipher
